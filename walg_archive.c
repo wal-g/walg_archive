@@ -64,6 +64,16 @@ _PG_archive_module_init(ArchiveModuleCallbacks *cb)
 	cb->archive_file_cb = walg_archive_file;
 }
 
+
+/*
+ * We use frontend/backend protocol to communicate through UNIX-socket
+ * So we define message format as array of bytes:
+ * 1 byte - type of message, char
+ * 1 byte - (N) len of message body including itself, int8
+ * (N - 1) byte - message body, char
+ */
+
+
 /*
  * walg_archive_configured
  *
@@ -74,8 +84,21 @@ static bool
 walg_archive_configured(void)
 {
 	fd = set_connection();
-	char *check_message = "CHECK";
-	if (send(fd, check_message, strlen(check_message)*sizeof(char), 0 ) == -1)
+
+	char message_type[] = "C";
+	char message_body[] = "CHECK";
+	uint8 message_len = sizeof(message_body) + 1;
+
+	char *p = palloc(sizeof(char)*message_len);
+	p[0] = message_type[0];
+	p[1] = message_len;
+	
+	for (int i = 2; i < message_len; i++) 
+	{
+		p[i] = message_body[i-2];
+	}
+
+	if (send(fd, p, sizeof(p), 0 ) == -1)
 	{
 		return false;
 	} 
@@ -86,7 +109,7 @@ walg_archive_configured(void)
 		return false;
 	} 
 
-	if (strcmp(check_response, "CHECKOK") == 0)
+	if (strcmp(check_response, "CHECKED") == 0)
 	{
 		return true;
 	} 
@@ -101,7 +124,19 @@ walg_archive_configured(void)
 static bool 
 walg_archive_file(const char *file, const char *path) 
 {	
-	if (send(fd, file, strlen(file)*sizeof(char), 0 ) == -1)
+	char message_type[] = "F";
+	uint8 message_len = sizeof(file) + 1;
+
+	char *p = palloc(sizeof(char)*message_len);
+	p[0] = message_type[0];
+	p[1] = message_len;
+	
+	for (int i = 2; i < message_len; i++) 
+	{
+		p[i] = file[i-2];
+	}
+
+	if (send(fd, p, sizeof(p), 0 ) == -1)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),

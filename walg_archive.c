@@ -19,6 +19,7 @@
 #include "storage/fd.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "port/pg_bswap.h"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -32,12 +33,13 @@ PG_MODULE_MAGIC;
 void		_PG_init(void);
 void		_PG_archive_module_init(ArchiveModuleCallbacks *cb);
 
-static char WalPushSocketName[] = "/tmp/wal-push.sock";
+static char *walg_socket=NULL;
 static int fd;
 
+static bool check_walg_socket(char **newval, void **extra, GucSource source);
 static bool walg_archive_configured(void);
 static bool walg_archive_file(const char *file, const char *path);
-static int set_connection();
+static int set_connection(void);
 
 /*
  * _PG_init
@@ -47,6 +49,15 @@ static int set_connection();
 void
 _PG_init(void)
 {
+	DefineCustomStringVariable("walg_archive.walg_socket",
+							   gettext_noop("WAL-G socket for archiving."),
+							   NULL,
+							   &walg_socket,
+							   "",
+							   PGC_SIGHUP,
+							   0,
+							   check_walg_socket, NULL, NULL);
+
 	MarkGUCPrefixReserved("walg_archive");
 }
 
@@ -64,13 +75,40 @@ _PG_archive_module_init(ArchiveModuleCallbacks *cb)
 	cb->archive_file_cb = walg_archive_file;
 }
 
+/*
+ * check_walg_socket
+ *
+ * Checks that the provided file descriptor exists.
+ */
+static bool
+check_walg_socket(char **newval, void **extra, GucSource source)
+{	
+	struct stat st;
+
+	if (*newval == NULL || *newval[0] == '\0')
+		return true;
+
+	if (strlen(*newval) + 64 + 2 >= MAXPGPATH)
+	{
+		GUC_check_errdetail("Path ti file is too long.");
+		return false;
+	}
+
+	if (stat(*newval, &st) != 0)
+	{
+		GUC_check_errdetail("Specified file does not exist.");
+		return false;
+	}
+
+	return true;
+}
 
 /*
  * We use frontend/backend protocol to communicate through UNIX-socket
  * So we define message format as array of bytes:
  * 1 byte - type of message, char
- * 1 byte - (N) len of message body including itself, int8
- * (N - 1) byte - message body, char
+ * 2 byte - (N) len of message body including first 3 bytes, uint16
+ * (N - 3) byte - message body, char
  */
 
 
@@ -84,32 +122,29 @@ static bool
 walg_archive_configured(void)
 {
 	fd = set_connection();
-
-	char message_type[] = "C";
+	char *message_type = "C";
 	char message_body[] = "CHECK";
-	uint8 message_len = sizeof(message_body) + 1;
+	uint16 message_len = sizeof(message_body) + 3;
+	uint16 res_size = pg_hton16(message_len);
 
 	char *p = palloc(sizeof(char)*message_len);
-	p[0] = message_type[0];
-	p[1] = message_len;
-	
-	for (int i = 2; i < message_len; i++) 
-	{
-		p[i] = message_body[i-2];
-	}
+	memcpy(p, message_type, sizeof(*message_type));
+	memcpy(p+1, &res_size, sizeof(uint16));
+	memcpy(p+3, message_body, sizeof(message_body));
 
-	if (send(fd, p, sizeof(p), 0 ) == -1)
+	if (send(fd, p, message_len, 0 ) == -1)
 	{
 		return false;
 	} 
-	char check_response[512];
+	pfree(p);
+	char response[512];
 
-	if (recv(fd, &check_response, sizeof(check_response), 0) == -1)
+	if (recv(fd, &response, sizeof(response), 0) == -1)
 	{
 		return false;
 	} 
 
-	if (strcmp(check_response, "CHECKED") == 0)
+	if (strcmp(response, "CHECKED") == 0)
 	{
 		return true;
 	} 
@@ -124,27 +159,25 @@ walg_archive_configured(void)
 static bool 
 walg_archive_file(const char *file, const char *path) 
 {	
-	char message_type[] = "F";
-	uint8 message_len = sizeof(file) + 1;
+	char *message_type = "F";
+	uint16 message_len = 28;
+	uint16 res_size = pg_hton16(message_len);
 
 	char *p = palloc(sizeof(char)*message_len);
-	p[0] = message_type[0];
-	p[1] = message_len;
+	memcpy(p, message_type, sizeof(*message_type));
+	memcpy(p+1, &res_size, sizeof(uint16));
+	memcpy(p+3, file, 25);
 	
-	for (int i = 2; i < message_len; i++) 
-	{
-		p[i] = file[i-2];
-	}
-
-	if (send(fd, p, sizeof(p), 0 ) == -1)
+	if (send(fd, p, message_len, 0) == -1)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),
 		 		errmsg("Error on sending message \n"));
 		return false; 
 	}
-
+	pfree(p);
 	char response[512];
+
 	if (recv(fd, &response, sizeof(response), 0) == -1) 
 	{	
 		printf("err : %d", errno);
@@ -153,7 +186,10 @@ walg_archive_file(const char *file, const char *path)
 		 		errmsg("Error on receiving message from wal-g \n"));
 		return false; 
 	}
-	if (strcmp(response, "OK") == 0) 
+	char is_ok[3];
+	memcpy(is_ok, response, 2);
+
+	if (strcmp(is_ok, "OK") == 0) 
 	{
 		ereport(LOG,
 			(errmsg("File: %s has been sent\n", file)));
@@ -182,16 +218,15 @@ set_connection(void)
 	
 	struct sockaddr_un remote;
 	remote.sun_family = AF_UNIX;
-    strcpy(remote.sun_path, WalPushSocketName);
+	
+    strcpy(remote.sun_path, walg_socket);
     int data_len = strlen(remote.sun_path) + sizeof(remote.sun_family);
-
 	if (connect(sock, (struct sockaddr*)&remote, data_len) == -1)
 	{
 		printf("\nError Code: %d\n", errno);
 		ereport(ERROR,
 				errcode_for_file_access(),
 		 		errmsg("Error on connecting to socket \n"));
-		
 		return -1;
 	}
 	return sock;

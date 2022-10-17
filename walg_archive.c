@@ -143,8 +143,7 @@ walg_archive_configured(void)
 	{
 		return false;
 	} 
-
-	if (strcmp(response, "CHECKED") == 0)
+	if (strcmp(response, "O") == 0)
 	{
 		return true;
 	} 
@@ -186,18 +185,15 @@ walg_archive_file(const char *file, const char *path)
 		 		errmsg("Error on receiving message from wal-g \n"));
 		return false; 
 	}
-	char is_ok[3];
-	memcpy(is_ok, response, 2);
-
-	if (strcmp(is_ok, "OK") == 0) 
+	if (strcmp(response, "O") == 0) 
 	{
 		ereport(LOG,
-			(errmsg("File: %s has been sent\n", file)));
+			(errmsg("File: %s has been sent \n", file)));
     	return true;
 	}
 	ereport(ERROR,
 		errcode_for_file_access(),
-		errmsg("Error code: %s \n", response));
+		errmsg("Message includes error \n."));
 
     return false;
 }
@@ -209,7 +205,8 @@ static int
 set_connection(void) 
 {
 	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sock == -1) {
+	if (sock == -1) 
+	{
 		ereport(ERROR,
 				errcode_for_file_access(),
 		 		errmsg("Error on creating of socket \n"));

@@ -142,12 +142,18 @@ walg_archive_configured(void)
 
 	if (recv(fd, &response, sizeof(response), 0) == -1)
 	{
+		ereport(ERROR,
+			errcode_for_file_access(),
+			errmsg("Failed to receive response."));
 		return false;
 	} 
-	if (strcmp(response, "O") == 0)
+	if (memcmp(response, "O", 1) == 0)
 	{
 		return true;
 	} 
+	ereport(ERROR,
+		errcode_for_file_access(),
+		errmsg("Incorrect response: %s", response));
 	return false;
 }
 
@@ -187,7 +193,7 @@ walg_archive_file(const char *file, const char *path)
 		 		errmsg("Error on receiving message from wal-g \n"));
 		return false; 
 	}
-	if (strcmp(response, "O") == 0) 
+	if (memcmp(response, "O", 1) == 0) 
 	{
 		ereport(LOG,
 			(errmsg("File: %s has been sent \n", file)));

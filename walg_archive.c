@@ -85,15 +85,26 @@ check_walg_socket(char **newval, void **extra, GucSource source)
 {	
 	struct stat st;
 
-	if (*newval == NULL || *newval[0] == '\0')
+	/*
+	 * The default value is an empty string, we have to accept that value on this step.
+	 */
+	if (*newval == NULL || *newval[0] == '\0'){
 		return true;
-
+	}
+		
+	/*
+	 * Make sure the file paths won't be too long. The docs indicate that the
+	 * file names to be archived can be up to 64 characters long.
+	 */
 	if (strlen(*newval) + 64 + 2 >= MAXPGPATH)
 	{
-		GUC_check_errdetail("Path ti file is too long.");
+		GUC_check_errdetail("Path to file descriptor is too long.");
 		return false;
 	}
 
+	/*
+	 * Check that the specified file exists.
+	 */
 	if (stat(*newval, &st) != 0)
 	{
 		GUC_check_errdetail("Specified file does not exist.");
@@ -108,7 +119,7 @@ check_walg_socket(char **newval, void **extra, GucSource source)
  * So we define message format as array of bytes:
  * 1 byte - type of message, char
  * 2 byte - (N) len of message body including first 3 bytes, uint16
- * (N - 3) byte - message body, char
+ * (N - 3) byte - message body, char.
  */
 
 
@@ -116,12 +127,22 @@ check_walg_socket(char **newval, void **extra, GucSource source)
  * walg_archive_configured
  *
  * We check connection with wal-g socket
- * with sending test message
+ * with sending test message.
  */
 static bool
 walg_archive_configured(void)
-{
+{	
+	// Check if the file descriptor is not an empty.
+	if (walg_socket == NULL || walg_socket[0] == '\0'){
+		ereport(ERROR,
+				errcode_for_file_access(),
+				errmsg("\"walg_archive.walg_socket\" parameter from config is an empty string."));	
+		return false;
+	}
+	
+	// Set connection through file descriptor
 	fd = set_connection();
+	
 	char message_type = 'C';
 	char message_body[] = "CHECK";
 	uint16 message_len = sizeof(message_body) + 2;
@@ -132,40 +153,45 @@ walg_archive_configured(void)
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, message_body, sizeof(message_body)-1);
 
+	// Check that the message has been sent in full.
 	int n;
 	do {
 		n = send(fd, p, message_len, 0);
 		if (n < 0) 
 		{
-			pfree(p);
+			ereport(ERROR,
+					errcode_for_file_access(),
+					errmsg("Failed to send check message."));
+			pfree(p);	
 			return false;
 		}
 	} while (n != message_len);
 	pfree(p);
 
+	// Get response from the WAL-G.
 	char response[512];
-
 	if (recv(fd, &response, sizeof(response), 0) == -1)
 	{
 		ereport(ERROR,
-			errcode_for_file_access(),
-			errmsg("Failed to receive response."));
+				errcode_for_file_access(),
+				errmsg("Failed to receive check response."));
 		return false;
 	} 
+
+	// Check WAL-G response.
 	if (memcmp(response, "O", 1) == 0)
 	{
 		return true;
 	} 
 	ereport(ERROR,
-		errcode_for_file_access(),
-		errmsg("Incorrect response: %s", response));
+			errcode_for_file_access(),
+			errmsg("Incorrect response: %s", response));
 	return false;
 }
 
 /*
  * Create connection through UNIX-socket
  * and send the name of file to wal-g daemon.
- *
  */
 static bool 
 walg_archive_file(const char *file, const char *path) 
@@ -179,6 +205,7 @@ walg_archive_file(const char *file, const char *path)
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, file, 24);
 	
+	// Check that the message has been sent in full.
 	int n;
 	do {
 		n = send(fd, p, message_len, 0);
@@ -186,38 +213,40 @@ walg_archive_file(const char *file, const char *path)
 		{
 			ereport(ERROR,
 					errcode_for_file_access(),
-					errmsg("Error on sending message \n"));
+					errmsg("Failed to send file message \n"));
 			pfree(p);
 			return false; 
 		}
 	} while (n != message_len);
 	pfree(p);
 
+	// Get response from the WAL-G.
 	char response[512];
-
 	if (recv(fd, &response, sizeof(response), 0) == -1) 
 	{	
 		printf("err : %d", errno);
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Error on receiving message from wal-g \n"));
+		 		errmsg("Failed to receive message from WAL-G \n"));
 		return false; 
 	}
+
+	// Check WAL-G response.
 	if (memcmp(response, "O", 1) == 0) 
 	{
 		ereport(LOG,
-			(errmsg("File: %s has been sent \n", file)));
+				(errmsg("File: %s has been sent \n", file)));
     	return true;
 	}
 	ereport(ERROR,
-		errcode_for_file_access(),
-		errmsg("Message includes error \n."));
+			errcode_for_file_access(),
+			errmsg("Message includes error \n."));
 
     return false;
 }
 /*
  * Set connection with wal-g
- * socket and return fd
+ * socket and return file descriptor.
  */
 static int 
 set_connection(void) 

@@ -135,13 +135,14 @@ walg_archive_configured(void)
 	int n;
 	do {
 		n = send(fd, p, message_len, 0);
+		if (n < 0) 
+		{
+			pfree(p);
+			return false;
+		}
 	} while (n != message_len);
 	pfree(p);
 
-	if (n == -1)
-	{
-		return false;
-	} 
 	char response[512];
 
 	if (recv(fd, &response, sizeof(response), 0) == -1)
@@ -181,16 +182,17 @@ walg_archive_file(const char *file, const char *path)
 	int n;
 	do {
 		n = send(fd, p, message_len, 0);
+		if (n < 0)
+		{
+			ereport(ERROR,
+					errcode_for_file_access(),
+					errmsg("Error on sending message \n"));
+			pfree(p);
+			return false; 
+		}
 	} while (n != message_len);
 	pfree(p);
-	
-	if (n == -1)
-	{
-		ereport(ERROR,
-				errcode_for_file_access(),
-		 		errmsg("Error on sending message \n"));
-		return false; 
-	}
+
 	char response[512];
 
 	if (recv(fd, &response, sizeof(response), 0) == -1) 

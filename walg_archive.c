@@ -132,8 +132,12 @@ walg_archive_configured(void)
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, message_body, sizeof(message_body)-1);
 
-	int n = send(fd, p, message_len, 0);
+	int n;
+	do {
+		n = send(fd, p, message_len, 0);
+	} while (n != message_len);
 	pfree(p);
+
 	if (n == -1)
 	{
 		return false;
@@ -174,8 +178,12 @@ walg_archive_file(const char *file, const char *path)
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, file, 24);
 	
-	int n = send(fd, p, message_len, 0);
+	int n;
+	do {
+		n = send(fd, p, message_len, 0);
+	} while (n != message_len);
 	pfree(p);
+	
 	if (n == -1)
 	{
 		ereport(ERROR,

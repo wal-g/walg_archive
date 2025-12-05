@@ -15,6 +15,9 @@
 #include "common/int.h"
 #include "miscadmin.h"
 #include "postmaster/pgarch.h"
+#if PG_VERSION_NUM >= 16000
+#include "archive/archive_module.h"
+#endif
 #include "storage/copydir.h"
 #include "storage/fd.h"
 #include "utils/guc.h"
@@ -24,22 +27,30 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/un.h>
-#include <setjmp.h>
 #include <string.h>
 #include <errno.h>
 
 PG_MODULE_MAGIC;
 
 void		_PG_init(void);
+#if PG_VERSION_NUM >= 16000
+const ArchiveModuleCallbacks *_PG_archive_module_init(void);
+#else
 void		_PG_archive_module_init(ArchiveModuleCallbacks *cb);
+#endif
 
 static char *walg_socket=NULL;
 static int fd;
 
 static bool check_walg_socket(char **newval, void **extra, GucSource source);
+static int set_connection(void);
+#if PG_VERSION_NUM >= 16000
+static bool walg_archive_configured(ArchiveModuleState *state);
+static bool walg_archive_file(ArchiveModuleState *state, const char *file, const char *path);
+#else
 static bool walg_archive_configured(void);
 static bool walg_archive_file(const char *file, const char *path);
-static int set_connection(void);
+#endif
 
 /*
  * _PG_init
@@ -66,6 +77,19 @@ _PG_init(void)
  *
  * Returns the module's archiving callbacks.
  */
+#if PG_VERSION_NUM >= 16000
+
+static ArchiveModuleCallbacks walg_archive = {
+	.check_configured_cb = walg_archive_configured,
+	.archive_file_cb = walg_archive_file
+};
+
+const ArchiveModuleCallbacks *
+_PG_archive_module_init(void)
+{
+	return &walg_archive;
+}
+#else
 void
 _PG_archive_module_init(ArchiveModuleCallbacks *cb)
 {
@@ -74,6 +98,7 @@ _PG_archive_module_init(ArchiveModuleCallbacks *cb)
 	cb->check_configured_cb = walg_archive_configured;
 	cb->archive_file_cb = walg_archive_file;
 }
+#endif
 
 /*
  * check_walg_socket
@@ -130,7 +155,11 @@ check_walg_socket(char **newval, void **extra, GucSource source)
  * with sending test message.
  */
 static bool
+#if PG_VERSION_NUM >= 16000
+walg_archive_configured(ArchiveModuleState *state)
+#else
 walg_archive_configured(void)
+#endif
 {	
 	// Check if the file descriptor is not an empty.
 	if (walg_socket == NULL || walg_socket[0] == '\0'){
@@ -145,10 +174,11 @@ walg_archive_configured(void)
 	
 	char message_type = 'C';
 	char message_body[] = "CHECK";
-	uint16 message_len = sizeof(message_body) + 2;
+
+	char p[sizeof(message_body) + 2];
+	const uint16 message_len = sizeof(p);
 	uint16 res_size = pg_hton16(message_len);
 
-	char *p = palloc(sizeof(char)*message_len);
 	memcpy(p, &message_type, sizeof(message_type));
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, message_body, sizeof(message_body)-1);
@@ -162,11 +192,9 @@ walg_archive_configured(void)
 			ereport(ERROR,
 					errcode_for_file_access(),
 					errmsg("Failed to send check message."));
-			pfree(p);	
 			return false;
 		}
 	} while (n != message_len);
-	pfree(p);
 
 	// Get response from the WAL-G.
 	char response[512];
@@ -194,13 +222,18 @@ walg_archive_configured(void)
  * and send the name of file to wal-g daemon.
  */
 static bool 
+#if PG_VERSION_NUM >= 16000
+walg_archive_file(ArchiveModuleState *state, const char *file, const char *path) 
+#else
 walg_archive_file(const char *file, const char *path) 
+#endif
 {	
 	char message_type = 'F';
-	uint16 message_len = 27;
+
+	char p[27];
+	const uint16 message_len = sizeof(p);
 	uint16 res_size = pg_hton16(message_len);
 
-	char *p = palloc(sizeof(char)*message_len);
 	memcpy(p, &message_type, sizeof(message_type));
 	memcpy(p+1, &res_size, sizeof(uint16));
 	memcpy(p+3, file, 24);
@@ -214,11 +247,9 @@ walg_archive_file(const char *file, const char *path)
 			ereport(ERROR,
 					errcode_for_file_access(),
 					errmsg("Failed to send file message \n"));
-			pfree(p);
 			return false; 
 		}
 	} while (n != message_len);
-	pfree(p);
 
 	// Get response from the WAL-G.
 	char response[512];

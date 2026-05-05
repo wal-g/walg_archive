@@ -25,9 +25,9 @@
 #include "port/pg_bswap.h"
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <netinet/in.h>
 #include <sys/un.h>
-#include <errno.h>
 
 PG_MODULE_MAGIC;
 
@@ -226,27 +226,38 @@ walg_archive_file(ArchiveModuleState *state, const char *file, const char *path)
 #else
 walg_archive_file(const char *file, const char *path) 
 #endif
-{	
-	char message_type = 'F';
+{
+	size_t file_len = strlen(file);
+	size_t message_len = file_len + 3;
 
-	char p[27];
-	const uint16 message_len = sizeof(p);
-	uint16 res_size = pg_hton16(message_len);
+	if (message_len > UINT16_MAX)
+	{
+		ereport(ERROR,
+				errcode_for_file_access(),
+				errmsg("File name too long: %s", file));
+		return false;
+	}
 
-	memcpy(p, &message_type, sizeof(message_type));
-	memcpy(p+1, &res_size, sizeof(uint16));
-	memcpy(p+3, file, 24);
-	
+	char header[3];
+	header[0] = 'F';
+	uint16 res_size = pg_hton16((uint16) message_len);
+	memcpy(header + 1, &res_size, sizeof(uint16));
+
+	struct iovec iov[2] = {
+		{ header, sizeof(header) },
+		{ (void *) file, file_len },
+	};
+
 	// Check that the message has been sent in full.
 	ssize_t n;
 	do {
-		n = send(fd, p, message_len, 0);
+		n = writev(fd, iov, 2);
 		if (n < 0)
 		{
 			ereport(ERROR,
 					errcode_for_file_access(),
 					errmsg("Failed to send file message\n"));
-			return false; 
+			return false;
 		}
 	} while (n != message_len);
 

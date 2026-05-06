@@ -25,10 +25,9 @@
 #include "port/pg_bswap.h"
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <netinet/in.h>
 #include <sys/un.h>
-#include <string.h>
-#include <errno.h>
 
 PG_MODULE_MAGIC;
 
@@ -184,7 +183,7 @@ walg_archive_configured(void)
 	memcpy(p+3, message_body, sizeof(message_body)-1);
 
 	// Check that the message has been sent in full.
-	int n;
+	ssize_t n;
 	do {
 		n = send(fd, p, message_len, 0);
 		if (n < 0) 
@@ -227,27 +226,38 @@ walg_archive_file(ArchiveModuleState *state, const char *file, const char *path)
 #else
 walg_archive_file(const char *file, const char *path) 
 #endif
-{	
-	char message_type = 'F';
+{
+	size_t file_len = strlen(file);
+	size_t message_len = file_len + 3;
 
-	char p[27];
-	const uint16 message_len = sizeof(p);
-	uint16 res_size = pg_hton16(message_len);
+	if (message_len > UINT16_MAX)
+	{
+		ereport(ERROR,
+				errcode_for_file_access(),
+				errmsg("File name too long: %s", file));
+		return false;
+	}
 
-	memcpy(p, &message_type, sizeof(message_type));
-	memcpy(p+1, &res_size, sizeof(uint16));
-	memcpy(p+3, file, 24);
-	
+	char header[3];
+	header[0] = 'F';
+	uint16 res_size = pg_hton16((uint16) message_len);
+	memcpy(header + 1, &res_size, sizeof(uint16));
+
+	struct iovec iov[2] = {
+		{ header, sizeof(header) },
+		{ (void *) file, file_len },
+	};
+
 	// Check that the message has been sent in full.
-	int n;
+	ssize_t n;
 	do {
-		n = send(fd, p, message_len, 0);
+		n = writev(fd, iov, 2);
 		if (n < 0)
 		{
 			ereport(ERROR,
 					errcode_for_file_access(),
-					errmsg("Failed to send file message \n"));
-			return false; 
+					errmsg("Failed to send file message\n"));
+			return false;
 		}
 	} while (n != message_len);
 
@@ -255,10 +265,9 @@ walg_archive_file(const char *file, const char *path)
 	char response[512];
 	if (recv(fd, &response, sizeof(response), 0) == -1) 
 	{	
-		printf("err : %d", errno);
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Failed to receive message from WAL-G \n"));
+		 		errmsg("Failed to receive message from WAL-G\n"));
 		return false; 
 	}
 
@@ -266,14 +275,14 @@ walg_archive_file(const char *file, const char *path)
 	if (memcmp(response, "O", 1) == 0) 
 	{
 		ereport(LOG,
-				(errmsg("File: %s has been sent \n", file)));
-    	return true;
+				(errmsg("File: %s has been sent\n", file)));
+		return true;
 	}
 	ereport(ERROR,
 			errcode_for_file_access(),
-			errmsg("Message includes error \n."));
+			errmsg("Message includes error\n."));
 
-    return false;
+	return false;
 }
 /*
  * Set connection with wal-g
@@ -287,21 +296,20 @@ set_connection(void)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Error on creating of socket \n"));
+		 		errmsg("Error on creating of socket\n"));
 		return -1;
 	}
 	
 	struct sockaddr_un remote;
+	memset(&remote, 0, sizeof(remote));
 	remote.sun_family = AF_UNIX;
-	
-    strcpy(remote.sun_path, walg_socket);
-    int data_len = strlen(remote.sun_path) + sizeof(remote.sun_family);
-	if (connect(sock, (struct sockaddr*)&remote, data_len) == -1)
+	strlcpy(remote.sun_path, walg_socket, sizeof(remote.sun_path));
+
+	if (connect(sock, (struct sockaddr*)&remote, sizeof(remote)) == -1)
 	{
-		printf("\nError Code: %d\n", errno);
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Error on connecting to socket \n"));
+		 		errmsg("Error on connecting to socket\n"));
 		return -1;
 	}
 	return sock;

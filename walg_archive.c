@@ -164,7 +164,7 @@ walg_archive_configured(void)
 	if (walg_socket == NULL || walg_socket[0] == '\0'){
 		ereport(ERROR,
 				errcode_for_file_access(),
-				errmsg("\"walg_archive.walg_socket\" parameter from config is an empty string."));	
+				errmsg("\"walg_archive.walg_socket\" parameter from config is an empty string"));	
 		return false;
 	}
 	
@@ -190,7 +190,7 @@ walg_archive_configured(void)
 		{
 			ereport(ERROR,
 					errcode_for_file_access(),
-					errmsg("Failed to send check message."));
+					errmsg("Failed to send check message"));
 			return false;
 		}
 	} while (n != message_len);
@@ -201,7 +201,7 @@ walg_archive_configured(void)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),
-				errmsg("Failed to receive check response."));
+				errmsg("Failed to receive check response"));
 		return false;
 	} 
 
@@ -256,7 +256,7 @@ walg_archive_file(const char *file, const char *path)
 		{
 			ereport(ERROR,
 					errcode_for_file_access(),
-					errmsg("Failed to send file message\n"));
+					errmsg("Failed to send file message"));
 			return false;
 		}
 	} while (n != message_len);
@@ -267,7 +267,7 @@ walg_archive_file(const char *file, const char *path)
 	{	
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Failed to receive message from WAL-G\n"));
+		 		errmsg("Failed to receive message from WAL-G"));
 		return false; 
 	}
 
@@ -275,12 +275,12 @@ walg_archive_file(const char *file, const char *path)
 	if (memcmp(response, "O", 1) == 0) 
 	{
 		ereport(LOG,
-				(errmsg("File: %s has been sent\n", file)));
+				(errmsg("File: %s has been sent", file)));
 		return true;
 	}
 	ereport(ERROR,
 			errcode_for_file_access(),
-			errmsg("Message includes error\n."));
+			errmsg("Message includes error"));
 
 	return false;
 }
@@ -296,7 +296,7 @@ set_connection(void)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Error on creating of socket\n"));
+		 		errmsg("Error on creating of socket"));
 		return -1;
 	}
 	
@@ -309,7 +309,7 @@ set_connection(void)
 	{
 		ereport(ERROR,
 				errcode_for_file_access(),
-		 		errmsg("Error on connecting to socket\n"));
+		 		errmsg("Error on connecting to socket"));
 		return -1;
 	}
 	return sock;

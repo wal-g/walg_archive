@@ -39,7 +39,7 @@ void		_PG_archive_module_init(ArchiveModuleCallbacks *cb);
 #endif
 
 static char *walg_socket=NULL;
-static int fd;
+static int fd = -1;
 
 static bool check_walg_socket(char **newval, void **extra, GucSource source);
 static int set_connection(void);
@@ -160,7 +160,6 @@ walg_archive_configured(ArchiveModuleState *state)
 walg_archive_configured(void)
 #endif
 {	
-	// Check if the file descriptor is not an empty.
 	if (walg_socket == NULL || walg_socket[0] == '\0'){
 		ereport(ERROR,
 				errcode_for_file_access(),
@@ -168,9 +167,17 @@ walg_archive_configured(void)
 		return false;
 	}
 	
-	// Set connection through file descriptor
+	if (fd != -1)
+		close(fd);
 	fd = set_connection();
-	
+	if (fd == -1)
+	{
+		ereport(ERROR,
+				errcode_for_file_access(),
+				errmsg("Failed to connect to wal-g socket \"%s\"", walg_socket));
+		return false;
+	}
+
 	char message_type = 'C';
 	char message_body[] = "CHECK";
 
@@ -292,14 +299,9 @@ static int
 set_connection(void) 
 {
 	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sock == -1) 
-	{
-		ereport(ERROR,
-				errcode_for_file_access(),
-		 		errmsg("Error on creating of socket"));
+	if (sock == -1)
 		return -1;
-	}
-	
+
 	struct sockaddr_un remote;
 	memset(&remote, 0, sizeof(remote));
 	remote.sun_family = AF_UNIX;
@@ -307,9 +309,7 @@ set_connection(void)
 
 	if (connect(sock, (struct sockaddr*)&remote, sizeof(remote)) == -1)
 	{
-		ereport(ERROR,
-				errcode_for_file_access(),
-		 		errmsg("Error on connecting to socket"));
+		close(sock);
 		return -1;
 	}
 	return sock;
